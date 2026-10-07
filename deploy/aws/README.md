@@ -6,7 +6,7 @@
 
 A entrada SQS tem duas camadas:
 
-1. **Assinatura do gateway (no serviço, testada).** Um gateway interno confiável autentica o provedor e assina cada mensagem com HMAC-SHA-256, usando a chave daquele provedor. O consumidor recalcula a assinatura com a chave do `providerId` declarado e manda para a DLQ, sem nenhum efeito, qualquer mensagem sem assinatura válida. Detalhes no `ARCHITECTURE.md` (seção "SQS e inbox").
+1. **Verificação da assinatura pelo serviço (testada).** O gateway interno confiável deve autenticar o provedor e assinar cada mensagem com HMAC-SHA-256, usando a chave daquele provedor. O consumidor recalcula a assinatura com a chave do `providerId` declarado e manda para a DLQ, sem nenhum efeito, qualquer mensagem sem assinatura válida. O gateway de produção não faz parte deste repositório; `cmd/sqssign` é uma ferramenta local de referência. Detalhes no `ARCHITECTURE.md` (seção "SQS e inbox").
 2. **IAM do broker (estes modelos, não testados).** Privilégio mínimo: só a role do gateway publica na fila de entrada, e o serviço só tem as permissões que usa.
 
 As duas camadas se complementam. A assinatura impede que alguém sem a chave de um provedor aja em nome dele, mesmo que consiga publicar na fila. O IAM reduz quem consegue publicar. Os provedores externos não recebem permissão de publicar nem as chaves de assinatura.

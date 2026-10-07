@@ -63,7 +63,7 @@ DATABASE_URL=postgres://wagering:wagering@localhost:5432/wagering?sslmode=disabl
 DATABASE_URL=postgres://wagering:wagering@localhost:5432/wagering?sslmode=disable go run ./cmd/migrate down 1
 ```
 
-Os arquivos ficam em `migrations/NNNN_nome.{up,down}.sql`, embutidos no binário. Cada versão aplicada é registrada em `schema_migrations`, e execuções concorrentes são serializadas por advisory lock. No container, use `docker compose run --rm migrate` (up) ou `docker compose run --rm --entrypoint /app/migrate migrate down 1`.
+Os arquivos ficam em `migrations/NNNN_nome.{up,down}.sql`, embutidos no binário. Cada versão aplicada é registrada em `schema_migrations`; um advisory lock serializa as execuções. A migração simultânea por várias instâncias não foi verificada (ver item 9 de [Itens incompletos](ARCHITECTURE.md#itens-incompletos-e-riscos)). No container, use `docker compose run --rm migrate` (up) ou `docker compose run --rm --entrypoint /app/migrate migrate down 1`.
 
 ## Variáveis de ambiente
 
@@ -105,7 +105,7 @@ ALPHA=$(token provider-alpha provider-alpha-local-secret)
 
 ## API
 
-Todos os endpoints de negócio exigem `Authorization: Bearer <token>`. Os erros seguem o formato `{"error":{"code","message","field?"}}`.
+Todos os endpoints de negócio exigem `Authorization: Bearer <token>`. Os erros seguem o formato `{"error":{"code":"…","message":"…","field":"…"}}`; o campo `field` é opcional.
 
 | Método e rota | Quem pode | Respostas |
 |---|---|---|
@@ -131,20 +131,20 @@ Respostas de `POST /wagering/transactions`:
 | 409 | `IDEMPOTENCY_KEY_REUSED` ou `DUPLICATE_EXTERNAL_TRANSACTION` |
 | 503 | `TEMPORARILY_UNAVAILABLE` (repetir com a mesma `Idempotency-Key`) |
 
-Corpo de resposta (todas as consultas de transação):
+Exemplo de resposta de `POST /wagering/transactions`:
 
 ```json
 {
   "transactionId": "…", "origin": "EXTERNAL", "providerId": "alpha", "externalTransactionId": "bet-1",
   "walletId": "…", "playerId": "player-1", "roundId": "r1", "gameId": "g1", "kind": "BET",
   "money": {"amount": "25.00", "currency": "BRL"},
-  "referenceExternalTransactionId": "…", "referenceTransactionId": "…",
-  "status": "PROCESSED", "failureCode": "…",
+  "status": "PROCESSED",
   "balanceAfter": {"amount": "75.00", "currency": "BRL"}, "walletVersion": 2,
-  "referenceAttempts": 1, "nextReferenceAttemptAt": "…",
   "idempotentReplay": false, "createdAt": "…", "updatedAt": "…"
 }
 ```
+
+Campos opcionais, como `failureCode`, referências e dados de tentativas, aparecem apenas quando aplicáveis. `idempotentReplay` é incluído na resposta do `POST`; as respostas dos endpoints `GET` de transação não incluem esse campo.
 
 ### Exemplos
 
