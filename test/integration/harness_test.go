@@ -29,6 +29,7 @@ import (
 	"wagering/internal/config"
 	"wagering/internal/fxapp"
 	"wagering/internal/postgres"
+	"wagering/internal/sqsauth"
 	"wagering/internal/sqsx"
 	"wagering/migrations"
 )
@@ -57,6 +58,12 @@ var clients = map[string]string{
 	"provider-alpha-short": "provider-alpha-short-local-secret",
 	"wallet-admin":         "wallet-admin-local-secret",
 	"no-role-client":       "no-role-client-local-secret",
+}
+
+// Fictitious HMAC keys for the SQS gateway signature (local tests only).
+var signingKeys = sqsauth.Keys{
+	"alpha": []byte("LOCAL-ONLY-FAKE-KEY-provider-alpha-do-not-use"),
+	"beta":  []byte("LOCAL-ONLY-FAKE-KEY-provider-beta-do-not-use!"),
 }
 
 func getenv(k, def string) string {
@@ -157,9 +164,10 @@ func baseConfig(t *testing.T, q testQueues) config.Config {
 		DatabaseURL: env.DatabaseURL, DBMaxConns: 20,
 		AWSRegion: "us-east-1", AWSEndpoint: env.AWSEndpoint, AWSAccessKeyID: "test", AWSSecretKey: "test",
 		WagerQueueName: q.Wager, WagerDLQName: q.DLQ, EventsQueueName: q.Events,
-		OIDCIssuer:   env.OIDCIssuer,
-		OIDCJWKSURL:  env.KeycloakURL + "/realms/wagering/protocol/openid-connect/certs",
-		OIDCAudience: "wagering-api",
+		OIDCIssuer:     env.OIDCIssuer,
+		OIDCJWKSURL:    env.KeycloakURL + "/realms/wagering/protocol/openid-connect/certs",
+		OIDCAudience:   "wagering-api",
+		SQSSigningKeys: signingKeys,
 
 		ConsumerName: "it-consumer", ConsumerWaitSeconds: 1, ConsumerVisibilityTimeout: 5, ConsumerMaxMessages: 10,
 		ConsumerProcessTimeout: 4 * time.Second, ConsumerRetryBase: time.Second, ConsumerRetryMax: 2 * time.Second,

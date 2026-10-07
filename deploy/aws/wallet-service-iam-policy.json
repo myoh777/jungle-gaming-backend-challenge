@@ -1,0 +1,26 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ConsumeInboundWagers",
+      "Effect": "Allow",
+      "Action": [
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility"
+      ],
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wager-transactions.fifo"
+    },
+    {
+      "Sid": "SendToDeadLetterAndEvents",
+      "Effect": "Allow",
+      "Action": ["sqs:GetQueueUrl", "sqs:SendMessage"],
+      "Resource": [
+        "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wager-transactions-dlq.fifo",
+        "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wallet-events"
+      ]
+    }
+  ]
+}

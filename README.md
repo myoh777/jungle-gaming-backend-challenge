@@ -74,6 +74,7 @@ Todas estão em [.env.example](.env.example). As principais:
 | `DATABASE_URL` | conexão PostgreSQL (obrigatória) |
 | `AWS_ENDPOINT_URL`, `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`, `AWS_REGION` | SQS (LocalStack localmente) |
 | `SQS_WAGER_QUEUE`, `SQS_WAGER_DLQ`, `SQS_EVENTS_QUEUE` | nomes das filas |
+| `SQS_PROVIDER_SIGNING_KEYS` ou `SQS_PROVIDER_SIGNING_KEYS_FILE` | chaves HMAC (uma por provedor) para verificar a assinatura do gateway nas mensagens SQS; JSON `{"providerId": "chave"}` com pelo menos 32 bytes por chave; obrigatória com `CONSUMER_ENABLED=true` (ver "Enviar pelo SQS") |
 | `OIDC_ISSUER` | `iss` esperado (`http://localhost:8081/realms/wagering`) |
 | `OIDC_JWKS_URL` | onde buscar as chaves (no Compose: rede interna `keycloak:8080`) |
 | `OIDC_AUDIENCE` | `aud` esperado (`wagering-api`) |
@@ -110,7 +111,7 @@ Todos os endpoints de negócio exigem `Authorization: Bearer <token>`. Os erros 
 |---|---|---|
 | `POST /wallets` | interno | 201, 400, 401, 403, 409 `WALLET_ALREADY_EXISTS` |
 | `GET /wallets/{walletId}` | interno | 200, 404 |
-| `GET /wallets/{walletId}/ledger?cursor=&limit=50` | interno | 200 `{entries, nextCursor?}` (limite 1..200, ordem estável por sequência; cursor opaco) |
+| `GET /wallets/{walletId}/ledger?cursor=&limit=50` | interno | 200 `{entries, nextCursor?}` (limite 1..200, ordem estável por sequência; cursor opaco), 400 (limite fora da faixa, cursor ou query string inválidos), 404 |
 | `POST /wallets/{walletId}/reconciliation` | interno | 200 `{walletId, storedBalance, calculatedBalance, difference, consistent, checkedEntries}` |
 | `POST /wagering/transactions` | provedor (o `providerId` do corpo tem de ser o do token) | ver abaixo |
 | `GET /wagering/transactions/{transactionId}` | provedor dono ou interno | 200, 404 (inclusive para transação de outro provedor) |
@@ -172,22 +173,32 @@ curl -s localhost:8080/providers/alpha/wagering/transactions/bet-1 -H "Authoriza
 
 ### Enviar pelo SQS
 
+Os provedores não publicam na fila. Um **gateway interno confiável** autentica o provedor e publica a operação assinada com HMAC-SHA-256, usando a chave daquele provedor. As chaves são gerenciadas pelo serviço e pelo gateway e nunca vão para os provedores. O consumidor verifica a assinatura com a chave do `providerId` declarado antes de qualquer efeito. Mensagens sem assinatura válida vão para a DLQ sem movimentar nada. O contrato da assinatura (forma canônica e vetor de teste) está em [ARCHITECTURE.md](ARCHITECTURE.md#sqs-e-inbox).
+
+Localmente, `cmd/sqssign` faz o papel do gateway: lê o envelope no stdin, assina com `SQS_SIGNING_KEY` e imprime o envelope com `signature`. A chave abaixo é a chave **fictícia** de `alpha`, em `deploy/local/fake-sqs-signing-keys.json`:
+
 ```bash
+export SQS_SIGNING_KEY='LOCAL-ONLY-FAKE-KEY-provider-alpha-do-not-use'   # fictícia, só local
+BODY=$(go run ./cmd/sqssign <<EOF
+{"messageId":"msg-1","type":"WagerTransactionRequested","occurredAt":"2026-01-01T00:00:00Z",
+ "data":{"idempotencyKey":"bet-2-key","providerId":"alpha","externalTransactionId":"bet-2",
+ "playerId":"player-1","walletId":"$WALLET","roundId":"r1","gameId":"g1","kind":"BET",
+ "money":{"amount":"10.00","currency":"BRL"}}}
+EOF
+)
 docker compose exec localstack awslocal sqs send-message \
   --queue-url http://localhost:4566/000000000000/wager-transactions.fifo \
-  --message-group-id "$WALLET" --message-deduplication-id msg-1 \
-  --message-body "{\"messageId\":\"msg-1\",\"type\":\"WagerTransactionRequested\",\"occurredAt\":\"2026-01-01T00:00:00Z\",
-    \"data\":{\"idempotencyKey\":\"bet-2-key\",\"providerId\":\"alpha\",\"externalTransactionId\":\"bet-2\",
-    \"playerId\":\"player-1\",\"walletId\":\"$WALLET\",\"roundId\":\"r1\",\"gameId\":\"g1\",\"kind\":\"BET\",
-    \"money\":{\"amount\":\"10.00\",\"currency\":\"BRL\"}}}"
+  --message-group-id "$WALLET" --message-deduplication-id msg-1 --message-body "$BODY"
 
 # eventos publicados pela outbox
 docker compose exec localstack awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/wallet-events --max-number-of-messages 10
-# DLQ
+# DLQ (inclui mensagens sem assinatura válida)
 docker compose exec localstack awslocal sqs receive-message --queue-url http://localhost:4566/000000000000/wager-transactions-dlq.fifo
 ```
 
 Use `MessageGroupId = walletId` e `MessageDeduplicationId = messageId`. A deduplicação real é feita pela inbox da aplicação.
+
+**Chaves reais:** nunca no repositório. Guarde o JSON de chaves em um cofre de segredos (por exemplo, AWS Secrets Manager) e entregue-o ao serviço e ao gateway como `SQS_PROVIDER_SIGNING_KEYS` ou como arquivo montado em `SQS_PROVIDER_SIGNING_KEYS_FILE`. Gere cada chave com, por exemplo, `openssl rand -base64 48`. Modelos de política IAM de privilégio mínimo (só o gateway publica na fila de entrada), **não aplicados nem testados**, estão em [deploy/aws/](deploy/aws/README.md). O LocalStack não aplica nem valida IAM.
 
 ## Testes
 
@@ -218,12 +229,14 @@ Variáveis opcionais: `TEST_DATABASE_URL`, `TEST_ADMIN_DATABASE_URL`, `TEST_AWS_
 | `wager_test.go` | fluxo BET/WIN/LOSS; replay com saldo original; conflitos de idempotência; política de zeros; reversões; 50 apostas iguais em paralelo; carteiras em paralelo |
 | `multiprocess_test.go` | **3 processos do binário real**; duas apostas de 80,00 numa carteira de 100,00 enviadas a todos; reenvio |
 | `auth_test.go` | credenciais ausentes, inválidas e expiradas; isolamento entre provedores; endpoints internos; ausência de efeitos |
-| `sqs_test.go` | inbox com mensagens repetidas; crash entre commit e delete; DLQ; retries transitórios; esgotamento → DLQ; HTTP × SQS |
+| `sqs_test.go` | inbox com mensagens repetidas; crash entre commit e delete; DLQ; retries transitórios; esgotamento → DLQ; HTTP × SQS com a mesma chave; assinatura ausente, malformada, de outro provedor, de provedor sem chave ou com conteúdo alterado → DLQ sem efeito (o LocalStack não valida IAM) |
 | `outbox_test.go` | commit sem publisher; 2 publishers concorrentes; crash entre publicação e confirmação (republicação com o mesmo `eventId`); retry com broker falhando |
 | `references_test.go` | REFUND antes da BET; expiração; retomada por outra instância após reinício |
 | `lifecycle_test.go` | start/stop do Fx, listener e pool liberados; start falha com IdP ou fila ausente |
 
 ## Simular falhas e recuperação
+
+Este roteiro descreve o comportamento esperado. Só o cenário de várias instâncias foi executado; os demais não foram (ver os itens 9 e 10 de [Itens incompletos](ARCHITECTURE.md#itens-incompletos-e-riscos)).
 
 - **Várias instâncias:** `docker compose --profile multi up --build` e envie a mesma `Idempotency-Key` para `:8080`, `:8090` e `:8091`.
 - **Crash do consumidor/publisher:** `docker compose kill app` no meio do processamento e depois `docker compose up -d app`. As mensagens não confirmadas voltam após o visibility timeout e são deduplicadas pela inbox; os eventos com lease expirado são republicados com o mesmo `eventId`.

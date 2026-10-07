@@ -1,0 +1,46 @@
+{
+  "Version": "2012-10-17",
+  "Id": "wager-transactions-queue-policy",
+  "Statement": [
+    {
+      "Sid": "AllowGatewayToSend",
+      "Effect": "Allow",
+      "Principal": { "AWS": ["arn:aws:iam::<ACCOUNT_ID>:role/<GATEWAY_ROLE>"] },
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wager-transactions.fifo"
+    },
+    {
+      "Sid": "AllowWalletServiceToConsume",
+      "Effect": "Allow",
+      "Principal": { "AWS": "arn:aws:iam::<ACCOUNT_ID>:role/<WALLET_SERVICE_ROLE>" },
+      "Action": [
+        "sqs:GetQueueUrl",
+        "sqs:GetQueueAttributes",
+        "sqs:ReceiveMessage",
+        "sqs:DeleteMessage",
+        "sqs:ChangeMessageVisibility"
+      ],
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wager-transactions.fifo"
+    },
+    {
+      "Sid": "DenySendFromAnyoneElse",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "sqs:SendMessage",
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wager-transactions.fifo",
+      "Condition": {
+        "StringNotEquals": {
+          "aws:PrincipalArn": ["arn:aws:iam::<ACCOUNT_ID>:role/<GATEWAY_ROLE>"]
+        }
+      }
+    },
+    {
+      "Sid": "DenyInsecureTransport",
+      "Effect": "Deny",
+      "Principal": "*",
+      "Action": "sqs:*",
+      "Resource": "arn:aws:sqs:<REGION>:<ACCOUNT_ID>:wager-transactions.fifo",
+      "Condition": { "Bool": { "aws:SecureTransport": "false" } }
+    }
+  ]
+}

@@ -20,16 +20,38 @@ import (
 
 	"wagering/internal/app"
 	"wagering/internal/observability"
+	"wagering/internal/sqsauth"
 	"wagering/internal/sqsconsumer"
 )
 
+// envelope builds a message signed the way the trusted gateway does, with the
+// key of w.ProviderID. Operations that are not valid requests (e.g. OPENING)
+// cannot be signed and are sent unsigned; the consumer rejects them anyway.
 func envelope(messageID, key string, w wager) string {
+	env := unsignedEnvelope(messageID, key, w)
+	if k, ok := signingKeys[w.ProviderID]; ok {
+		_ = sqsconsumer.Sign(&env, k)
+	}
+	raw, _ := json.Marshal(env)
+	return string(raw)
+}
+
+func unsignedEnvelope(messageID, key string, w wager) sqsconsumer.Envelope {
 	data := w.body()
 	data["idempotencyKey"] = key
 	raw, _ := json.Marshal(map[string]any{
 		"messageId": messageID, "type": sqsconsumer.MessageType,
 		"occurredAt": time.Now().UTC().Format(time.RFC3339), "data": data,
 	})
+	env, err := sqsconsumer.Decode(string(raw))
+	if err != nil {
+		panic(err)
+	}
+	return env
+}
+
+func marshal(env sqsconsumer.Envelope) string {
+	raw, _ := json.Marshal(env)
 	return string(raw)
 }
 
@@ -182,11 +204,19 @@ func (f *flakyProcessor) Process(ctx context.Context, in app.WagerInput, inbox *
 	return f.next.Process(ctx, in, inbox)
 }
 
+func mustVerifier() *sqsauth.Verifier {
+	v, err := sqsauth.NewVerifier(signingKeys)
+	if err != nil {
+		panic(err)
+	}
+	return v
+}
+
 func manualConsumer(q testQueues, proc sqsconsumer.Processor) *sqsconsumer.Consumer {
 	return sqsconsumer.New(sqsClient, proc, sqsconsumer.Config{
 		ConsumerName: "it-consumer", QueueURL: func() string { return q.WagerURL }, DLQURL: func() string { return q.DLQURL },
 		WaitSeconds: 1, VisibilityTimeout: 5, MaxMessages: 10, ProcessTimeout: 4 * time.Second,
-		RetryBase: time.Second, RetryMax: time.Second,
+		RetryBase: time.Second, RetryMax: time.Second, Signatures: mustVerifier(),
 	}, observability.NewMetrics(), slog.New(slog.NewTextHandler(io.Discard, nil)))
 }
 
@@ -257,5 +287,83 @@ func TestHTTPAndSQSSameOperation(t *testing.T) {
 	}
 	if n := countRows(t, `SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id = $1 AND direction = 'DEBIT'`, walletID); n != 5 {
 		t.Fatalf("debits = %d", n)
+	}
+}
+
+// walletEventsSQL counts the outbox events of a wallet: balance events use the
+// wallet id as aggregate, transaction events use the transaction id.
+const walletEventsSQL = `SELECT count(*) FROM outbox_events WHERE aggregate_id = $1
+	OR aggregate_id IN (SELECT id::text FROM wager_transactions WHERE wallet_id::text = $1)`
+
+// TestSQSRejectsUnauthenticatedMessages: messages without a valid gateway
+// signature for the declared providerId go to the DLQ without any effect (no
+// inbox row, transaction, ledger entry, balance change or event). LocalStack
+// does not enforce IAM, so this proves the application-level check only; the
+// broker policies in deploy/aws are not exercised here.
+func TestSQSRejectsUnauthenticatedMessages(t *testing.T) {
+	q := createQueues(t, 5)
+	cfg := baseConfig(t, q)
+	cfg.ConsumerEnabled = true
+	a := startApp(t, cfg)
+	player := "player-" + newID()
+	walletID := createWallet(t, a.base, player, "100.00")
+	eventsBefore := countRows(t, walletEventsSQL, walletID)
+
+	credit := func(provider string) wager { // a WIN without reference is a credit
+		return wager{ProviderID: provider, ExternalID: "forged-" + newID(), PlayerID: player, WalletID: walletID, Kind: "WIN", Amount: "500.00"}
+	}
+	var bad []sqsconsumer.Envelope
+	// 1. no signature
+	bad = append(bad, unsignedEnvelope(newID(), newID(), credit("alpha")))
+	// 2. signed with beta's key but declaring alpha
+	env := unsignedEnvelope(newID(), newID(), credit("alpha"))
+	must(t, sqsconsumer.Sign(&env, signingKeys["beta"]))
+	bad = append(bad, env)
+	// 3. signed by alpha, then providerId switched to beta
+	env = unsignedEnvelope(newID(), newID(), credit("alpha"))
+	must(t, sqsconsumer.Sign(&env, signingKeys["alpha"]))
+	env.Data.ProviderID = "beta"
+	bad = append(bad, env)
+	// 4. valid signature, amount changed afterwards
+	env = unsignedEnvelope(newID(), newID(), wager{ProviderID: "alpha", ExternalID: "tampered-" + newID(), PlayerID: player, WalletID: walletID, Kind: "WIN", Amount: "1.00"})
+	must(t, sqsconsumer.Sign(&env, signingKeys["alpha"]))
+	env.Data.Money.Amount = "500.00"
+	bad = append(bad, env)
+	// 5. provider without a key
+	env = unsignedEnvelope(newID(), newID(), credit("gamma"))
+	must(t, sqsconsumer.Sign(&env, signingKeys["alpha"]))
+	bad = append(bad, env)
+	// 6. malformed signature
+	env = unsignedEnvelope(newID(), newID(), credit("alpha"))
+	env.Signature = "deadbeef"
+	bad = append(bad, env)
+
+	for _, e := range bad {
+		sendRaw(t, q.WagerURL, marshal(e), walletID)
+	}
+	// A correctly signed operation behind them proves the consumer kept working.
+	valid := newID()
+	sendRaw(t, q.WagerURL, envelope(newID(), newID(), wager{ProviderID: "alpha", ExternalID: valid, PlayerID: player, WalletID: walletID, Kind: "BET", Amount: "10.00"}), walletID)
+
+	eventually(t, 30*time.Second, func() bool {
+		return queueDepth(t, q.DLQURL) == len(bad) && queueDepth(t, q.WagerURL) == 0 && txStatusByExternal(t, valid) == "PROCESSED"
+	}, "forged messages in DLQ and valid one processed")
+
+	for _, e := range bad {
+		if n := countRows(t, `SELECT count(*) FROM wager_transactions WHERE external_transaction_id = $1`, e.Data.ExternalTransactionID); n != 0 {
+			t.Fatalf("rejected %s was persisted", e.Data.ExternalTransactionID)
+		}
+		if n := countRows(t, `SELECT count(*) FROM inbox_messages WHERE message_id = $1`, e.MessageID); n != 0 {
+			t.Fatalf("rejected message %s reached the inbox", e.MessageID)
+		}
+	}
+	if bal, _ := walletBalance(t, walletID); bal != 9000 {
+		t.Fatalf("balance %d, expected only the valid 10.00 debit", bal)
+	}
+	if n := countRows(t, `SELECT count(*) FROM wallet_ledger_entries WHERE wallet_id = $1`, walletID); n != 2 {
+		t.Fatalf("ledger entries = %d, expected opening + valid bet", n)
+	}
+	if n := countRows(t, walletEventsSQL, walletID) - eventsBefore; n != 2 {
+		t.Fatalf("events added = %d, expected 2 for the valid bet", n)
 	}
 }

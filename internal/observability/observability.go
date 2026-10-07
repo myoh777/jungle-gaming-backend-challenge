@@ -40,6 +40,7 @@ type Metrics struct {
 	SQSMessages           *prometheus.CounterVec // labels: result
 	SQSRetries            prometheus.Counter
 	SQSDeadLettered       prometheus.Counter
+	SQSUnauthenticated    prometheus.Counter
 	OutboxPublished       prometheus.Counter
 	OutboxPublishFailures prometheus.Counter
 	OutboxOldestPending   prometheus.Gauge
@@ -78,6 +79,9 @@ func NewMetrics() *Metrics {
 	m.SQSDeadLettered = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "sqs_messages_dead_lettered_total", Help: "SQS messages explicitly sent to the DLQ by this consumer.",
 	})
+	m.SQSUnauthenticated = prometheus.NewCounter(prometheus.CounterOpts{
+		Name: "sqs_messages_unauthenticated_total", Help: "SQS messages rejected because the gateway signature was missing or invalid.",
+	})
 	m.OutboxPublished = prometheus.NewCounter(prometheus.CounterOpts{
 		Name: "outbox_events_published_total", Help: "Outbox events published and confirmed.",
 	})
@@ -105,7 +109,7 @@ func NewMetrics() *Metrics {
 
 	for _, c := range []prometheus.Collector{
 		m.WagerResults, m.IdempotentReplays, m.IdempotencyConflicts, m.ConcurrencyRetries,
-		m.SQSMessages, m.SQSRetries, m.SQSDeadLettered, m.OutboxPublished, m.OutboxPublishFailures,
+		m.SQSMessages, m.SQSRetries, m.SQSDeadLettered, m.SQSUnauthenticated, m.OutboxPublished, m.OutboxPublishFailures,
 		m.OutboxOldestPending, m.ReferenceRetries, m.ReconciliationRuns, m.ReconciliationDiverge,
 		m.HTTPDuration, m.WagerDuration,
 	} {

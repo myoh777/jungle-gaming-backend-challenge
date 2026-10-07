@@ -22,6 +22,11 @@ x-app: &app
     OIDC_ISSUER: http://localhost:8081/realms/wagering
     OIDC_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
     OIDC_AUDIENCE: wagering-api
+    # HMAC keys for the gateway signature on SQS messages. The mounted file holds
+    # FICTITIOUS local-only keys; real keys come from a secret store (see README).
+    SQS_PROVIDER_SIGNING_KEYS_FILE: /run/secrets/sqs-signing-keys.json
+  volumes:
+    - ./deploy/local/fake-sqs-signing-keys.json:/run/secrets/sqs-signing-keys.json:ro
   depends_on:
     migrate:
       condition: service_completed_successfully

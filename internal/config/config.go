@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"wagering/internal/sqsauth"
 )
 
 type Config struct {
@@ -28,6 +30,11 @@ type Config struct {
 	WagerQueueName  string
 	WagerDLQName    string
 	EventsQueueName string
+
+	// SQSSigningKeys holds one HMAC key per provider for messages signed by
+	// the trusted gateway. Loaded from SQS_PROVIDER_SIGNING_KEYS (JSON) or
+	// SQS_PROVIDER_SIGNING_KEYS_FILE; never printed.
+	SQSSigningKeys sqsauth.Keys
 
 	OIDCIssuer   string // expected "iss" claim
 	OIDCJWKSURL  string // where to fetch signing keys (may be an internal hostname)
@@ -79,6 +86,7 @@ func Load() (Config, error) {
 		WagerQueueName:  r.str("SQS_WAGER_QUEUE", "wager-transactions.fifo"),
 		WagerDLQName:    r.str("SQS_WAGER_DLQ", "wager-transactions-dlq.fifo"),
 		EventsQueueName: r.str("SQS_EVENTS_QUEUE", "wallet-events"),
+		SQSSigningKeys:  r.signingKeys("SQS_PROVIDER_SIGNING_KEYS"),
 
 		OIDCIssuer:   r.str("OIDC_ISSUER", ""),
 		OIDCJWKSURL:  r.str("OIDC_JWKS_URL", ""),
@@ -130,6 +138,12 @@ func (c Config) Validate() error {
 	}
 	if !strings.HasSuffix(c.WagerQueueName, ".fifo") || !strings.HasSuffix(c.WagerDLQName, ".fifo") {
 		errs = append(errs, errors.New("wager queue and DLQ must be FIFO (.fifo)"))
+	}
+	if err := c.SQSSigningKeys.Validate(); err != nil {
+		errs = append(errs, fmt.Errorf("SQS_PROVIDER_SIGNING_KEYS: %w", err))
+	}
+	if c.ConsumerEnabled && len(c.SQSSigningKeys) == 0 {
+		errs = append(errs, errors.New("SQS_PROVIDER_SIGNING_KEYS (or _FILE) is required when CONSUMER_ENABLED=true"))
 	}
 	if c.ReferenceMaxAttempts < 2 {
 		errs = append(errs, errors.New("REFERENCE_MAX_ATTEMPTS must be >= 2"))
@@ -200,6 +214,36 @@ func (r *reader) dur(key string, def time.Duration) time.Duration {
 		r.errs = append(r.errs, fmt.Errorf("%s: %w", key, err))
 	}
 	return d
+}
+
+// signingKeys reads a JSON object from key, or from the file named by
+// key+"_FILE" (for mounted secrets). Setting both is an error.
+func (r *reader) signingKeys(key string) sqsauth.Keys {
+	inline, hasInline := os.LookupEnv(key)
+	path, hasFile := os.LookupEnv(key + "_FILE")
+	var raw []byte
+	switch {
+	case hasInline && hasFile:
+		r.errs = append(r.errs, fmt.Errorf("set only one of %s and %s_FILE", key, key))
+		return nil
+	case hasFile:
+		b, err := os.ReadFile(path)
+		if err != nil {
+			r.errs = append(r.errs, fmt.Errorf("%s_FILE: %w", key, err))
+			return nil
+		}
+		raw = b
+	case hasInline:
+		raw = []byte(inline)
+	default:
+		return nil
+	}
+	keys, err := sqsauth.ParseKeys(raw)
+	if err != nil {
+		r.errs = append(r.errs, fmt.Errorf("%s: %w", key, err))
+		return nil
+	}
+	return keys
 }
 
 func (r *reader) err() error { return errors.Join(r.errs...) }

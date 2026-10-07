@@ -1,6 +1,9 @@
 // Package sqsconsumer consumes wager operations from the FIFO queue and calls
-// the same use case as HTTP. A message is deleted only after the SQL
-// transaction that recorded it in the inbox has committed.
+// the same use case as HTTP. Every message must carry an HMAC signature made
+// by the trusted gateway with the key of the declared providerId (see
+// package sqsauth); the signature is verified before the use case runs. A
+// message is deleted only after the SQL transaction that recorded it in the
+// inbox has committed.
 package sqsconsumer
 
 import (
@@ -20,6 +23,7 @@ import (
 
 	"wagering/internal/app"
 	"wagering/internal/observability"
+	"wagering/internal/sqsauth"
 )
 
 // MessageType is the only accepted envelope type.
@@ -31,6 +35,9 @@ type Envelope struct {
 	Type       string    `json:"type"`
 	OccurredAt string    `json:"occurredAt"`
 	Data       WagerData `json:"data"`
+	// Signature is the lowercase hex HMAC-SHA-256 of the canonical business
+	// fields (sqsauth.Canonical), made by the trusted gateway.
+	Signature string `json:"signature,omitempty"`
 }
 
 // WagerData mirrors the HTTP body plus the idempotency key (HTTP sends it as a header).
@@ -86,6 +93,8 @@ type Config struct {
 	ProcessTimeout    time.Duration
 	RetryBase         time.Duration
 	RetryMax          time.Duration
+	// Signatures verifies the gateway signature. Nil rejects every message.
+	Signatures *sqsauth.Verifier
 }
 
 // Consumer polls one queue.
@@ -191,14 +200,20 @@ func (c *Consumer) Handle(ctx context.Context, m types.Message) Action {
 	log := c.log.With("messageId", env.MessageID, "providerId", env.Data.ProviderID, "walletId", env.Data.WalletID,
 		"correlationId", correlationID(env))
 
-	in := app.WagerInput{
-		ProviderID: env.Data.ProviderID, ExternalTransactionID: env.Data.ExternalTransactionID,
-		IdempotencyKey: env.Data.IdempotencyKey, PlayerID: env.Data.PlayerID, WalletID: env.Data.WalletID,
-		RoundID: env.Data.RoundID, GameID: env.Data.GameID, Kind: env.Data.Kind,
-		Amount: env.Data.Money.Amount, Currency: env.Data.Money.Currency,
-		ReferenceExternalTransactionID: env.Data.ReferenceExternalTransactionID,
-		CorrelationID:                  correlationID(env), CausationID: env.MessageID, Source: "sqs",
+	in := toInput(env)
+	// Authenticate before the use case: a rejected message writes nothing
+	// (no inbox row, transaction, ledger entry or event).
+	req, err := app.BuildRequest(in)
+	if err != nil {
+		log.Warn("invalid message, sent to DLQ", "error", err.Error())
+		return ActionDeadLetter
 	}
+	if err := c.cfg.Signatures.Verify(req, env.Signature); err != nil {
+		c.metrics.SQSUnauthenticated.Inc()
+		log.Warn("unauthenticated message, sent to DLQ", "error", err.Error())
+		return ActionDeadLetter
+	}
+
 	res, err := c.proc.Process(ctx, in, &app.InboxMessage{
 		ConsumerName: c.cfg.ConsumerName, MessageID: env.MessageID, ReceivedAt: time.Now().UTC(),
 	})
@@ -333,6 +348,29 @@ func Decode(body string) (Envelope, error) {
 		return Envelope{}, fmt.Errorf("occurredAt must be RFC3339: %w", err)
 	}
 	return env, nil
+}
+
+func toInput(env Envelope) app.WagerInput {
+	return app.WagerInput{
+		ProviderID: env.Data.ProviderID, ExternalTransactionID: env.Data.ExternalTransactionID,
+		IdempotencyKey: env.Data.IdempotencyKey, PlayerID: env.Data.PlayerID, WalletID: env.Data.WalletID,
+		RoundID: env.Data.RoundID, GameID: env.Data.GameID, Kind: env.Data.Kind,
+		Amount: env.Data.Money.Amount, Currency: env.Data.Money.Currency,
+		ReferenceExternalTransactionID: env.Data.ReferenceExternalTransactionID,
+		CorrelationID:                  correlationID(env), CausationID: env.MessageID, Source: "sqs",
+	}
+}
+
+// Sign sets env.Signature with key, exactly as the consumer verifies it. It is
+// the reference implementation for the gateway (and is used by cmd/sqssign and
+// the tests). It fails if the operation is not a valid request.
+func Sign(env *Envelope, key []byte) error {
+	req, err := app.BuildRequest(toInput(*env))
+	if err != nil {
+		return err
+	}
+	env.Signature = sqsauth.Sign(key, req)
+	return nil
 }
 
 func correlationID(env Envelope) string {

@@ -29,6 +29,7 @@ import (
 	"wagering/internal/outbox"
 	"wagering/internal/pendingref"
 	"wagering/internal/postgres"
+	"wagering/internal/sqsauth"
 	"wagering/internal/sqsconsumer"
 	"wagering/internal/sqsx"
 	"wagering/migrations"
@@ -206,7 +207,11 @@ func RegisterHTTPServer(lc fx.Lifecycle, cfg config.Config, h *httpapi.Handler, 
 
 var WorkersModule = fx.Module("workers",
 	fx.Provide(
-		func(client *sqs.Client, w *app.WagerService, q *Queues, cfg config.Config, m *observability.Metrics, log *slog.Logger) *sqsconsumer.Consumer {
+		func(client *sqs.Client, w *app.WagerService, q *Queues, cfg config.Config, m *observability.Metrics, log *slog.Logger) (*sqsconsumer.Consumer, error) {
+			verifier, err := sqsauth.NewVerifier(cfg.SQSSigningKeys)
+			if err != nil {
+				return nil, fmt.Errorf("sqs signing keys: %w", err)
+			}
 			return sqsconsumer.New(client, w, sqsconsumer.Config{
 				ConsumerName: cfg.ConsumerName,
 				QueueURL:     func() string { return q.WagerURL },
@@ -214,7 +219,8 @@ var WorkersModule = fx.Module("workers",
 				WaitSeconds:  cfg.ConsumerWaitSeconds, VisibilityTimeout: cfg.ConsumerVisibilityTimeout,
 				MaxMessages: cfg.ConsumerMaxMessages, ProcessTimeout: cfg.ConsumerProcessTimeout,
 				RetryBase: cfg.ConsumerRetryBase, RetryMax: cfg.ConsumerRetryMax,
-			}, m, log)
+				Signatures: verifier,
+			}, m, log), nil
 		},
 		func(repo *postgres.OutboxRepo, client *sqs.Client, q *Queues, cfg config.Config, m *observability.Metrics, log *slog.Logger) *outbox.Publisher {
 			sender := sqsx.NewEventSender(client, func() string { return q.EventsURL })
