@@ -1,0 +1,262 @@
+{
+  "realm": "wagering",
+  "enabled": true,
+  "sslRequired": "none",
+  "accessTokenLifespan": 300,
+  "roles": {
+    "realm": [
+      {
+        "name": "wagering-provider",
+        "description": "Game provider: may submit and read its own wager transactions"
+      },
+      {
+        "name": "wallet-internal",
+        "description": "Internal wallet service: wallets, ledger, reconciliation, any transaction"
+      },
+      {
+        "name": "default-roles-wagering",
+        "composite": false
+      }
+    ]
+  },
+  "defaultRole": {
+    "name": "default-roles-wagering"
+  },
+  "clients": [
+    {
+      "clientId": "provider-alpha",
+      "name": "provider-alpha",
+      "description": "Local test provider alpha",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "provider-alpha-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "wagering-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "wagering-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "provider-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "provider_id",
+            "claim.value": "alpha",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "attributes": {}
+    },
+    {
+      "clientId": "provider-beta",
+      "name": "provider-beta",
+      "description": "Local test provider beta",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "provider-beta-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "wagering-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "wagering-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "provider-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "provider_id",
+            "claim.value": "beta",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "attributes": {}
+    },
+    {
+      "clientId": "provider-alpha-short",
+      "name": "provider-alpha-short",
+      "description": "Provider alpha with 3s tokens, used to test expiry",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "provider-alpha-short-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "wagering-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "wagering-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        },
+        {
+          "name": "provider-id",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-hardcoded-claim-mapper",
+          "config": {
+            "claim.name": "provider_id",
+            "claim.value": "alpha",
+            "jsonType.label": "String",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "userinfo.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "attributes": {
+        "access.token.lifespan": "3"
+      }
+    },
+    {
+      "clientId": "wallet-admin",
+      "name": "wallet-admin",
+      "description": "Internal wallet service client",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "wallet-admin-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "wagering-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "wagering-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "attributes": {}
+    },
+    {
+      "clientId": "no-role-client",
+      "name": "no-role-client",
+      "description": "Valid token without any business role",
+      "enabled": true,
+      "protocol": "openid-connect",
+      "publicClient": false,
+      "clientAuthenticatorType": "client-secret",
+      "secret": "no-role-client-local-secret",
+      "serviceAccountsEnabled": true,
+      "standardFlowEnabled": false,
+      "implicitFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "fullScopeAllowed": true,
+      "protocolMappers": [
+        {
+          "name": "wagering-api-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": {
+            "included.custom.audience": "wagering-api",
+            "access.token.claim": "true",
+            "id.token.claim": "false",
+            "introspection.token.claim": "true"
+          }
+        }
+      ],
+      "attributes": {}
+    }
+  ],
+  "users": [
+    {
+      "username": "service-account-provider-alpha",
+      "enabled": true,
+      "serviceAccountClientId": "provider-alpha",
+      "realmRoles": [
+        "wagering-provider",
+        "default-roles-wagering"
+      ]
+    },
+    {
+      "username": "service-account-provider-beta",
+      "enabled": true,
+      "serviceAccountClientId": "provider-beta",
+      "realmRoles": [
+        "wagering-provider",
+        "default-roles-wagering"
+      ]
+    },
+    {
+      "username": "service-account-provider-alpha-short",
+      "enabled": true,
+      "serviceAccountClientId": "provider-alpha-short",
+      "realmRoles": [
+        "wagering-provider",
+        "default-roles-wagering"
+      ]
+    },
+    {
+      "username": "service-account-wallet-admin",
+      "enabled": true,
+      "serviceAccountClientId": "wallet-admin",
+      "realmRoles": [
+        "wallet-internal",
+        "default-roles-wagering"
+      ]
+    },
+    {
+      "username": "service-account-no-role-client",
+      "enabled": true,
+      "serviceAccountClientId": "no-role-client",
+      "realmRoles": [
+        "default-roles-wagering"
+      ]
+    }
+  ]
+}

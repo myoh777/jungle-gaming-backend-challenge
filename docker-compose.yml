@@ -1,0 +1,118 @@
+# Local stack: PostgreSQL, Keycloak (OIDC IdP), LocalStack (SQS), migrations and the app.
+#   docker compose up --build                       # one app instance on :8080
+#   docker compose --profile multi up --build       # plus app-2 (:8090) and app-3 (:8091)
+#   docker compose up -d postgres keycloak localstack   # only dependencies (integration tests)
+
+x-app: &app
+  build: .
+  restart: unless-stopped
+  environment: &app-env
+    LOG_LEVEL: info
+    HTTP_ADDR: ":8080"
+    DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering?sslmode=disable
+    AWS_REGION: us-east-1
+    AWS_ENDPOINT_URL: http://localstack:4566
+    AWS_ACCESS_KEY_ID: test
+    AWS_SECRET_ACCESS_KEY: test
+    SQS_WAGER_QUEUE: wager-transactions.fifo
+    SQS_WAGER_DLQ: wager-transactions-dlq.fifo
+    SQS_EVENTS_QUEUE: wallet-events
+    # Tokens are requested by clients at http://localhost:8081, so that is the issuer;
+    # the app fetches keys over the internal network.
+    OIDC_ISSUER: http://localhost:8081/realms/wagering
+    OIDC_JWKS_URL: http://keycloak:8080/realms/wagering/protocol/openid-connect/certs
+    OIDC_AUDIENCE: wagering-api
+  depends_on:
+    migrate:
+      condition: service_completed_successfully
+    keycloak:
+      condition: service_healthy
+    localstack:
+      condition: service_healthy
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    environment:
+      POSTGRES_USER: wagering
+      POSTGRES_PASSWORD: wagering
+      POSTGRES_DB: wagering
+    ports: ["5432:5432"]
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./deploy/postgres/init:/docker-entrypoint-initdb.d:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U wagering -d wagering"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.0.7
+    command: ["start-dev", "--import-realm"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_HOSTNAME: http://localhost:8081
+      KC_HOSTNAME_BACKCHANNEL_DYNAMIC: "true"
+      KC_HEALTH_ENABLED: "true"
+    ports: ["8081:8080"]
+    volumes:
+      - ./deploy/keycloak/wagering-realm.json:/opt/keycloak/data/import/wagering-realm.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && printf 'GET /health/ready HTTP/1.1\\r\\nHost: localhost\\r\\nConnection: close\\r\\n\\r\\n' >&3 && grep -q 'UP' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 60
+
+  localstack:
+    image: localstack/localstack:4.4
+    environment:
+      SERVICES: sqs
+      AWS_DEFAULT_REGION: us-east-1
+      # Only needed by LocalStack images that require an account token.
+      LOCALSTACK_AUTH_TOKEN: ${LOCALSTACK_AUTH_TOKEN:-}
+    ports: ["4566:4566"]
+    volumes:
+      - ./deploy/localstack/init-sqs.sh:/etc/localstack/init/ready.d/init-sqs.sh:ro
+    healthcheck:
+      # Healthy only after the init script created the last queue.
+      test: ["CMD-SHELL", "awslocal sqs get-queue-url --queue-name wallet-events >/dev/null 2>&1"]
+      interval: 3s
+      timeout: 5s
+      retries: 60
+
+  migrate:
+    build: .
+    entrypoint: ["/app/migrate", "up"]
+    environment:
+      DATABASE_URL: postgres://wagering:wagering@postgres:5432/wagering?sslmode=disable
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    <<: *app
+    ports: ["8080:8080"]
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-1
+
+  app-2:
+    <<: *app
+    profiles: ["multi"]
+    ports: ["8090:8080"]
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-2
+
+  app-3:
+    <<: *app
+    profiles: ["multi"]
+    ports: ["8091:8080"]
+    environment:
+      <<: *app-env
+      INSTANCE_ID: app-3
+
+volumes:
+  pgdata:
